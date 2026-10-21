@@ -14,6 +14,7 @@ import {
   IProviderDiscoveryService,
   ISessionIndex,
   ISessionIndexMirror,
+  ISessionManager,
   ICapabilityService,
   IPluginService,
   IWorkspaceService,
@@ -82,6 +83,7 @@ import {
 import { createServerSessionRating } from './services/sessionRating';
 import { TranscriptService } from './services/transcript/transcriptService';
 import { ModelCatalogRefreshScheduler } from './services/modelCatalog/modelCatalogRefreshScheduler';
+import { SessionIdleReaper, resolveSessionIdleReclaimMs } from './services/sessionIdleReaper';
 import { startConfigChangedPublisher } from './services/config/configChangedPublisher';
 import { createAuthFailureLimiter } from './middleware/rateLimit';
 import {
@@ -148,6 +150,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const port = opts.port ?? DEFAULT_PORT;
   const homeDir = resolveKimiHome(opts.homeDir);
   const serverVersion = opts.serverVersion ?? getServerVersion();
+  const idleReclaimMs = resolveSessionIdleReclaimMs(opts.env ?? process.env);
   const registry = createInstanceRegistry({
     instancesDir: opts.instancesDir ?? join(homeDir, 'server', 'instances'),
   });
@@ -272,6 +275,11 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     core.accessor.get(IConfigService),
     logger,
   );
+  const sessionIdleReaper = new SessionIdleReaper(
+    core.accessor.get(ISessionManager),
+    logger,
+    idleReclaimMs,
+  );
 
   try {
     await core.accessor.get(IWorkspaceService).list();
@@ -337,6 +345,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     capabilityInstallSubscription.dispose();
     authFailureLimiter?.dispose();
     modelCatalogRefreshScheduler.dispose();
+    await sessionIdleReaper.close();
     try {
       await shutdownServerTelemetry(telemetry);
     } catch (error) {
@@ -631,6 +640,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       'provider-model catalog auto-refresh failed to start',
     );
   });
+  sessionIdleReaper.start();
 
   process.on('unhandledRejection', onUnhandledRejection);
   process.on('uncaughtException', onUncaughtException);
